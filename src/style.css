@@ -1,0 +1,47 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0f12; }
+body { font-family: 'Trebuchet MS', system-ui, sans-serif; color: #f2ede4; user-select: none; }
+body.playing { cursor: none; }
+#app canvas { display: block; }
+
+#hud { position: fixed; inset: 0; pointer-events: none; }
+.panel { position: absolute; top: 16px; padding: 10px 14px; background: rgba(10, 12, 16, 0.55); border-radius: 8px; }
+#health { left: 16px; width: min(260px, 45vw); }
+#health .label { display: flex; justify-content: space-between; font-size: 13px; letter-spacing: 1px; margin-bottom: 6px; }
+#hp-bar { height: 10px; background: #2a1414; border-radius: 5px; overflow: hidden; }
+#hp-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #c0392b, #e74c3c); transition: width 0.15s; }
+#hp-fill.low { animation: pulse 0.6s infinite alternate; }
+@keyframes pulse { to { filter: brightness(1.7); } }
+#wavebox { right: 16px; text-align: right; }
+#wave { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
+#left, #kills { font-size: 13px; opacity: 0.8; }
+#stats { position: absolute; left: 16px; bottom: 12px; font: 11px monospace; opacity: 0.55; }
+
+#vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(160, 0, 0, 0.85) 100%); transition: opacity 0.3s; }
+
+#banner { position: fixed; top: 22%; width: 100%; text-align: center; pointer-events: none; opacity: 0; }
+#banner.show { animation: banner 2.5s ease-out forwards; }
+#banner-title { font-size: clamp(32px, 7vw, 64px); letter-spacing: 6px; text-transform: uppercase; text-shadow: 0 4px 18px #000; }
+#banner-sub { font-size: 16px; opacity: 0.85; text-shadow: 0 2px 8px #000; }
+@keyframes banner { 0% { opacity: 0; transform: scale(1.3); } 12% { opacity: 1; transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; } }
+
+#crosshair { position: fixed; left: -12px; top: -12px; width: 24px; height: 24px; pointer-events: none; display: none; }
+body.playing #crosshair { display: block; }
+#crosshair::before, #crosshair::after { content: ''; position: absolute; background: #fff; box-shadow: 0 0 3px #000; }
+#crosshair::before { left: 11px; top: 0; width: 2px; height: 24px; }
+#crosshair::after { top: 11px; left: 0; height: 2px; width: 24px; }
+
+#screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; padding: 16px; text-align: center; background: rgba(8, 9, 12, 0.72); backdrop-filter: blur(3px); cursor: pointer; }
+#screen.show { display: flex; }
+#screen h1 { font-size: clamp(44px, 11vw, 96px); letter-spacing: 8px; line-height: 1; }
+#screen h1 span { color: #c0392b; }
+#screen h1.dead { color: #c0392b; }
+#screen .tag { font-size: 17px; opacity: 0.85; }
+#screen .best { font-size: 14px; opacity: 0.7; }
+.controls { display: grid; grid-template-columns: repeat(2, auto); gap: 6px 28px; font-size: 14px; opacity: 0.85; }
+.controls b { color: #e8c170; }
+#screen button { font: inherit; font-size: 18px; letter-spacing: 2px; padding: 12px 28px; border: 2px solid #c0392b;
+  background: transparent; color: #f2ede4; border-radius: 6px; cursor: pointer; }
+#screen button:hover { background: #c0392b; }

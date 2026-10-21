@@ -1,13 +1,14 @@
 import { Bullets } from './bullets';
 import {
-  BULLET_SPEED, MAP_SIZE as S, MAX_ALIVE, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED, ZOMBIE_RADIUS,
+  ATTACK_HIT_AT, ATTACK_TIME, BULLET_SPEED, CORPSE_LIFE, MAP_SIZE as S, MAX_ALIVE, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED, RISE_TIME,
+  ZOMBIE_RADIUS,
 } from './config';
 import { Effects } from './effects';
 import { FlowField, UNREACHABLE } from './flow';
 import { SpatialGrid } from './grid';
 import { GameMap, pushed } from './map';
 import { Player } from './player';
-import { Zombies } from './zombies';
+import { Corpses, Zombies } from './zombies';
 
 /** Per-frame player intent, already converted to world space. */
 export interface Controls {
@@ -24,11 +25,14 @@ const ATTACK_RANGE = ZOMBIE_RADIUS + PLAYER_RADIUS + 0.25;
 const ZOMBIE_DAMAGE = 10;
 const PISTOL_DAMAGE = 25;
 const PISTOL_COOLDOWN = 0.15;
+/** Seconds of death animation before the game-over screen. */
+const DEATH_TIME = 2.2;
 
 export class Game {
   readonly map: GameMap;
   readonly flow: FlowField;
   readonly zombies = new Zombies();
+  readonly corpses = new Corpses();
   readonly grid = new SpatialGrid();
   readonly bullets = new Bullets();
   readonly fx = new Effects();
@@ -70,13 +74,20 @@ export class Game {
   update(dt: number, c: Controls): void {
     if (this.over) return;
     this.time += dt;
-    this.updatePlayer(dt, c);
+    const p = this.player;
+    if (p.deadT >= 0) {
+      p.deadT += dt;
+      if (p.deadT > DEATH_TIME) this.over = true;
+    } else {
+      this.updatePlayer(dt, c);
+    }
     this.flow.update(this.player.x, this.player.z);
     this.updateWaves(dt);
     this.grid.build(this.zombies.x, this.zombies.z, this.zombies.n);
     this.updateZombies(dt);
     this.updateBullets(dt);
     this.removeDead();
+    this.corpses.update(dt, CORPSE_LIFE);
     this.fx.update(dt);
     this.shake *= Math.exp(-10 * dt);
     this.muzzle = Math.max(0, this.muzzle - dt);
@@ -112,6 +123,7 @@ export class Game {
     const dx = Math.sin(a), dz = Math.cos(a);
     this.bullets.spawn(p.x + dx * 0.8, p.z + dz * 0.8, dx * BULLET_SPEED, dz * BULLET_SPEED, PISTOL_DAMAGE, 0.9);
     p.fireCd = PISTOL_COOLDOWN;
+    p.lastShot = this.time;
     this.muzzle = 0.05;
     this.shake = Math.max(this.shake, 0.06);
   }
@@ -144,7 +156,7 @@ export class Game {
     this.spawnInterval = Math.max(0.08, 0.9 - w * 0.06);
     this.spawnTimer = 0;
     this.waveHp = 50 * (1 + 0.15 * (w - 1));
-    this.waveSpeed = 1.9 + Math.min(1.5, w * 0.1);
+    this.waveSpeed = 1.3 + Math.min(0.9, w * 0.07);
     this.announce(`Wave ${w}`, `${this.toSpawn} zombies`);
   }
 
@@ -158,8 +170,10 @@ export class Game {
       if (Math.hypot(cx + 0.5 - p.x, cz + 0.5 - p.z) < 20) continue;
       for (let k = 0; k < count; k++) {
         const runner = Math.random() < Math.min(0.25, 0.04 * this.wave);
-        const speed = this.waveSpeed * (0.8 + Math.random() * 0.4) * (runner ? 1.6 : 1);
-        this.zombies.spawn(cx + 0.2 + Math.random() * 0.6, cz + 0.2 + Math.random() * 0.6, this.waveHp, speed);
+        const speed = runner
+          ? 3.2 + Math.min(1, this.wave * 0.05) + Math.random() * 0.4
+          : this.waveSpeed * (0.8 + Math.random() * 0.4);
+        this.zombies.spawn(cx + 0.2 + Math.random() * 0.6, cz + 0.2 + Math.random() * 0.6, this.waveHp, speed, runner);
       }
       return count;
     }
@@ -171,9 +185,19 @@ export class Game {
     const turn = 1 - Math.exp(-6 * dt);
     for (let i = 0; i < zs.n; i++) {
       zs.flash[i] = Math.max(0, zs.flash[i] - dt);
+      if (zs.hitT[i] >= 0 && (zs.hitT[i] += dt) > 0.4) zs.hitT[i] = -1;
       if (zs.rise[i] < 1) {
-        zs.rise[i] = Math.min(1, zs.rise[i] + dt / 0.9);
+        zs.rise[i] = Math.min(1, zs.rise[i] + dt / RISE_TIME);
         continue;
+      }
+      // Mid-attack zombies mostly stand their ground; the hit lands partway through the swing.
+      let attacking = false;
+      if (zs.atkT[i] >= 0) {
+        const before = zs.atkT[i];
+        zs.atkT[i] += dt;
+        if (before < ATTACK_HIT_AT && zs.atkT[i] >= ATTACK_HIT_AT) this.zombieHits(i);
+        if (zs.atkT[i] > ATTACK_TIME) zs.atkT[i] = -1;
+        else attacking = true;
       }
       let x = zs.x[i], z = zs.z[i];
       const dx = p.x - x, dz = p.z - z;
@@ -185,7 +209,7 @@ export class Game {
         const c = SpatialGrid.cell(x, z);
         if (flow.dirX[c] !== 0 || flow.dirZ[c] !== 0) { tx = flow.dirX[c]; tz = flow.dirZ[c]; }
       }
-      const sp = zs.speed[i];
+      const sp = zs.speed[i] * (attacking ? 0.15 : 1);
       zs.vx[i] += (tx * sp - zs.vx[i]) * turn;
       zs.vz[i] += (tz * sp - zs.vz[i]) * turn;
       x += zs.vx[i] * dt;
@@ -224,9 +248,9 @@ export class Game {
         p.z -= pz * o * 0.15;
       }
       zs.attackCd[i] -= dt;
-      if (pd < ATTACK_RANGE && zs.attackCd[i] <= 0) {
-        zs.attackCd[i] = 1;
-        this.hurtPlayer(ZOMBIE_DAMAGE, -px / (pd || 1), -pz / (pd || 1));
+      if (pd < ATTACK_RANGE && zs.attackCd[i] <= 0 && p.deadT < 0) {
+        zs.attackCd[i] = 1.3;
+        zs.atkT[i] = 0;
       }
 
       this.map.collideCircle(x, z, ZOMBIE_RADIUS);
@@ -237,12 +261,21 @@ export class Game {
       let da = want - zs.angle[i];
       da = Math.atan2(Math.sin(da), Math.cos(da));
       zs.angle[i] += da * turn * 1.5;
-      zs.phase[i] += dt * sp * 4.5;
+      zs.phase[i] += dt * Math.hypot(zs.vx[i], zs.vz[i]);
     }
     // Zombies may have shoved the player into a wall.
     this.map.collideCircle(p.x, p.z, PLAYER_RADIUS);
     p.x = pushed.x;
     p.z = pushed.z;
+  }
+
+  /** The swing connects only if the player is still in reach. */
+  private zombieHits(i: number) {
+    const p = this.player, zs = this.zombies;
+    const dx = p.x - zs.x[i], dz = p.z - zs.z[i];
+    const d = Math.hypot(dx, dz);
+    if (d > ATTACK_RANGE + 0.3 || p.deadT >= 0) return;
+    this.hurtPlayer(ZOMBIE_DAMAGE, dx / (d || 1), dz / (d || 1));
   }
 
   private hurtPlayer(dmg: number, dx: number, dz: number) {
@@ -253,7 +286,7 @@ export class Game {
     this.fx.blood(p.x, 1, p.z, dx, dz, 8);
     if (p.hp <= 0) {
       p.hp = 0;
-      this.over = true;
+      p.deadT = 0;
     }
   }
 
@@ -303,6 +336,7 @@ export class Game {
     const zs = this.zombies;
     zs.hp[j] -= dmg;
     zs.flash[j] = 0.08;
+    zs.hitT[j] = 0;
     zs.vx[j] += dx * 2.5;
     zs.vz[j] += dz * 2.5;
     this.fx.blood(zs.x[j], 1, zs.z[j], dx, dz, 5);
@@ -316,6 +350,10 @@ export class Game {
 
   private removeDead() {
     const zs = this.zombies;
-    for (let i = zs.n - 1; i >= 0; i--) if (zs.hp[i] <= 0) zs.remove(i);
+    for (let i = zs.n - 1; i >= 0; i--) {
+      if (zs.hp[i] > 0) continue;
+      this.corpses.add(zs.x[i], zs.z[i], zs.angle[i], zs.tint[i]);
+      zs.remove(i);
+    }
   }
 }

@@ -1,11 +1,12 @@
 import './style.css';
+import { loadAssets } from './assets';
 import { MAX_STEP } from './config';
 import { Game, type Controls } from './game';
 import { Hud } from './hud';
 import { Input } from './input';
 import { Renderer, SCREEN_RIGHT, SCREEN_UP } from './renderer';
 
-type State = 'menu' | 'playing' | 'paused' | 'over';
+type State = 'loading' | 'menu' | 'playing' | 'paused' | 'over';
 
 const BEST_KEY = 'hidupmati.best';
 
@@ -17,8 +18,7 @@ const hud = new Hud();
 const controls: Controls = { moveX: 0, moveZ: 0, aimX: 0, aimZ: 0, firing: false };
 
 let game = new Game(Math.random() * 1e9);
-renderer.setGame(game);
-let state: State = 'menu';
+let state: State = 'loading';
 
 function loadBest(): { wave: number; kills: number } {
   try {
@@ -44,7 +44,9 @@ function setState(next: State) {
   state = next;
   document.body.classList.toggle('playing', next === 'playing');
   if (next === 'playing') { screen.classList.remove('show'); return; }
-  if (next === 'menu') {
+  if (next === 'loading') {
+    showScreen(`<h1>HIDUP<span>MATI</span></h1><p class="tag" id="progress">Loading 0%</p>`);
+  } else if (next === 'menu') {
     const best = loadBest();
     showScreen(`
       <h1>HIDUP<span>MATI</span></h1>
@@ -69,6 +71,7 @@ function setState(next: State) {
 }
 
 screen.addEventListener('click', () => {
+  if (state === 'loading') return;
   if (state === 'over') {
     game = new Game(Math.random() * 1e9);
     renderer.setGame(game);
@@ -105,13 +108,39 @@ function frame(now: number) {
     if (game.over) setState('over');
   }
 
-  renderer.render(game);
-  hud.update(game, dt, input.screenX, input.screenY, state === 'playing');
+  if (state !== 'loading') {
+    renderer.render(game, state === 'playing' ? dt : 0);
+    hud.update(game, dt, input.screenX, input.screenY, state === 'playing');
+    autoQuality(dt);
+  }
   requestAnimationFrame(frame);
 }
 
-setState('menu');
+// Drop the expensive effects if the game can't hold ~45 fps for a few seconds.
+let slowTime = 0;
+/** `?hq` keeps full quality regardless of frame rate (for screenshots on slow machines). */
+const FIXED_QUALITY = new URLSearchParams(location.search).has('hq');
+function autoQuality(dt: number) {
+  if (state !== 'playing' || renderer.quality === 'low' || FIXED_QUALITY) return;
+  slowTime = dt > 1 / 45 ? slowTime + dt : Math.max(0, slowTime - dt * 0.5);
+  if (slowTime > 3) renderer.setQuality('low');
+}
+
+setState('loading');
 requestAnimationFrame(frame);
+loadAssets((f) => {
+  const el = document.getElementById('progress');
+  if (el) el.textContent = `Loading ${Math.round(f * 100)}%`;
+}).then((assets) => {
+  renderer.init(assets);
+  renderer.setGame(game);
+  setState('menu');
+}).catch((e) => {
+  const el = document.getElementById('progress');
+  if (el) el.textContent = `Couldn't load the game files: ${e instanceof Error ? e.message : e}`;
+  console.error(e);
+});
 
 // Exposed for automated smoke tests.
-(window as unknown as { __game: () => Game }).__game = () => game;
+(window as unknown as { __game: () => Game; __renderer: Renderer }).__game = () => game;
+(window as unknown as { __renderer: Renderer }).__renderer = renderer;

@@ -10,19 +10,31 @@ export class Zombies {
   readonly hp = new Float32Array(ZOMBIE_CAP);
   readonly speed = new Float32Array(ZOMBIE_CAP);
   readonly angle = new Float32Array(ZOMBIE_CAP);
+  /** Distance walked; drives the walk cycle. */
   readonly phase = new Float32Array(ZOMBIE_CAP);
   /** 0..1 while climbing out of the ground; zombies can't act until 1. */
   readonly rise = new Float32Array(ZOMBIE_CAP);
   readonly flash = new Float32Array(ZOMBIE_CAP);
   readonly attackCd = new Float32Array(ZOMBIE_CAP);
   readonly tint = new Float32Array(ZOMBIE_CAP);
+  readonly runner = new Uint8Array(ZOMBIE_CAP);
+  /** Seconds since the current attack started, or -1. */
+  readonly atkT = new Float32Array(ZOMBIE_CAP);
+  /** Seconds since the last bullet hit, or -1. */
+  readonly hitT = new Float32Array(ZOMBIE_CAP);
+  /** Render-only animation state; lives here so it moves with swap-removes. */
+  readonly animClip = new Int8Array(ZOMBIE_CAP);
+  readonly animTime = new Float32Array(ZOMBIE_CAP);
+  readonly animPrevRow = new Float32Array(ZOMBIE_CAP);
+  readonly animFade = new Float32Array(ZOMBIE_CAP);
 
   private readonly fields = [
     this.x, this.z, this.vx, this.vz, this.hp, this.speed, this.angle,
-    this.phase, this.rise, this.flash, this.attackCd, this.tint,
+    this.phase, this.rise, this.flash, this.attackCd, this.tint, this.runner,
+    this.atkT, this.hitT, this.animClip, this.animTime, this.animPrevRow, this.animFade,
   ];
 
-  spawn(x: number, z: number, hp: number, speed: number): void {
+  spawn(x: number, z: number, hp: number, speed: number, runner: boolean): void {
     if (this.n >= ZOMBIE_CAP) return;
     const i = this.n++;
     for (const f of this.fields) f[i] = 0;
@@ -33,7 +45,11 @@ export class Zombies {
     this.angle[i] = Math.random() * Math.PI * 2;
     this.phase[i] = Math.random() * 10;
     this.attackCd[i] = 0.5;
-    this.tint[i] = 0.75 + Math.random() * 0.35;
+    this.tint[i] = 0.8 + Math.random() * 0.3;
+    this.runner[i] = runner ? 1 : 0;
+    this.atkT[i] = -1;
+    this.hitT[i] = -1;
+    this.animClip[i] = -1;
   }
 
   /** Swap-remove; callers iterating should walk indices downwards. */
@@ -41,5 +57,44 @@ export class Zombies {
     const last = --this.n;
     if (i === last) return;
     for (const f of this.fields) f[i] = f[last];
+  }
+}
+
+const CORPSE_CAP = 200;
+
+/** Dead zombies lying around; the oldest is dropped when full. */
+export class Corpses {
+  n = 0;
+  readonly x = new Float32Array(CORPSE_CAP);
+  readonly z = new Float32Array(CORPSE_CAP);
+  readonly angle = new Float32Array(CORPSE_CAP);
+  readonly tint = new Float32Array(CORPSE_CAP);
+  /** Seconds since death. */
+  readonly t = new Float32Array(CORPSE_CAP);
+
+  add(x: number, z: number, angle: number, tint: number): void {
+    if (this.n >= CORPSE_CAP) this.remove(0);
+    const i = this.n++;
+    this.x[i] = x;
+    this.z[i] = z;
+    this.angle[i] = angle;
+    this.tint[i] = tint;
+    this.t[i] = 0;
+  }
+
+  update(dt: number, life: number): void {
+    for (let i = this.n - 1; i >= 0; i--) {
+      this.t[i] += dt;
+      if (this.t[i] > life) this.remove(i);
+    }
+  }
+
+  private remove(i: number): void {
+    const last = --this.n;
+    this.x[i] = this.x[last];
+    this.z[i] = this.z[last];
+    this.angle[i] = this.angle[last];
+    this.tint[i] = this.tint[last];
+    this.t[i] = this.t[last];
   }
 }

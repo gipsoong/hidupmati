@@ -1,108 +1,89 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BULLET_CAP, DECAL_CAP, MAP_SIZE as S, PARTICLE_CAP, ZOMBIE_CAP } from './config';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import type { Assets } from './assets';
+import {
+  ATTACK_TIME, BULLET_CAP, CORPSE_LIFE, DECAL_CAP, MAP_SIZE as S, PARTICLE_CAP, ZOMBIE_CAP,
+} from './config';
 import type { Game } from './game';
-import { FLOOR_INDOOR, FLOOR_ROAD, type GameMap } from './map';
+import { PlayerAvatar } from './render/avatar';
+import { BakedCrowd } from './render/crowd';
+import { buildWorld } from './render/world';
 
 /** Fixed isometric-style camera direction (from target towards camera). */
-const CAM_OFFSET = new THREE.Vector3(1, 1.35, 1).normalize().multiplyScalar(60);
-const VIEW_HEIGHT = 22;
-const AIM_HEIGHT = 0.75;
+const CAM_OFFSET = new THREE.Vector3(1, 1.5, 1).normalize().multiplyScalar(60);
+const VIEW_HEIGHT = 17;
+const AIM_HEIGHT = 1.2;
+const CORPSE_CAP = 200;
 
 /** World-space ground directions for screen up and screen right. */
 export const SCREEN_UP = { x: -Math.SQRT1_2, z: -Math.SQRT1_2 };
 export const SCREEN_RIGHT = { x: Math.SQRT1_2, z: -Math.SQRT1_2 };
 
-function box(w: number, h: number, d: number, x: number, y: number, z: number, color: number): THREE.BufferGeometry {
-  const g = new THREE.BoxGeometry(w, h, d).toNonIndexed();
-  g.translate(x, y, z);
-  const c = new THREE.Color(color);
-  const n = g.getAttribute('position').count;
-  const cols = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) { cols[i * 3] = c.r; cols[i * 3 + 1] = c.g; cols[i * 3 + 2] = c.b; }
-  g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-  return g;
-}
+/** Zombie clip names and how fast each cycles. */
+const ZCLIPS = ['SPAWN', 'WALK', 'RUN', 'ATK', 'HIT', 'DEAD'];
+const enum ZClip { Spawn, Walk, Run, Attack, Hit, Dead }
+/** Metres covered per second of walk / run animation, so feet match ground speed. */
+const WALK_STRIDE = 0.85;
+const RUN_STRIDE = 3.0;
+const FADE_TIME = 0.18;
+/** The zombie model faces +Z like the game's angle convention. */
+const ZOMBIE_YAW = 0;
 
-/** Boxhead-style zombie: feet at y=0, facing +Z. */
-function zombieGeometry(): THREE.BufferGeometry {
-  const skin = 0x7fa36a, shirt = 0x6b6f4f, pants = 0x3b4a5c;
-  return mergeGeometries([
-    box(0.18, 0.55, 0.2, -0.12, 0.275, 0, pants),
-    box(0.18, 0.55, 0.2, 0.12, 0.275, 0, pants),
-    box(0.5, 0.55, 0.3, 0, 0.825, 0, shirt),
-    box(0.38, 0.38, 0.38, 0, 1.3, 0, skin),
-    box(0.14, 0.14, 0.5, -0.32, 1.0, 0.22, skin),
-    box(0.14, 0.14, 0.5, 0.32, 1.0, 0.22, skin),
-    box(0.08, 0.06, 0.02, -0.09, 1.34, 0.195, 0xff2a10),
-    box(0.08, 0.06, 0.02, 0.09, 1.34, 0.195, 0xff2a10),
-  ])!;
-}
+const VIGNETTE = {
+  uniforms: { tDiffuse: { value: null }, strength: { value: 0.55 } },
+  vertexShader: /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse; uniform float strength; varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      // Slightly desaturated, cool shadows and warm highlights: a dusk palette.
+      float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+      vec3 graded = mix(vec3(l), c.rgb, 0.9);
+      graded *= mix(vec3(0.92, 0.98, 1.06), vec3(1.05, 1.0, 0.92), smoothstep(0.1, 0.7, l));
+      vec2 d = vUv - 0.5;
+      float v = 1.0 - dot(d, d) * strength * 2.2;
+      gl_FragColor = vec4(graded * v, c.a);
+    }`,
+};
 
-function playerGeometry(): THREE.BufferGeometry {
-  const skin = 0xe0b48c, jacket = 0x2f5d8a, pants = 0x2a2a30, hair = 0x3a2616, gun = 0x222222;
-  return mergeGeometries([
-    box(0.18, 0.55, 0.2, -0.12, 0.275, 0, pants),
-    box(0.18, 0.55, 0.2, 0.12, 0.275, 0, pants),
-    box(0.5, 0.55, 0.3, 0, 0.825, 0, jacket),
-    box(0.38, 0.38, 0.38, 0, 1.3, 0, skin),
-    box(0.4, 0.1, 0.4, 0, 1.52, -0.02, hair),
-    box(0.14, 0.14, 0.45, 0.24, 0.95, 0.2, jacket),
-    box(0.14, 0.14, 0.35, -0.24, 0.95, 0.15, jacket),
-    box(0.1, 0.12, 0.45, 0.2, 0.98, 0.5, gun),
-  ])!;
-}
-
-/** Paint the tile map into a texture once per map. */
-function floorTexture(map: GameMap): THREE.CanvasTexture {
-  const px = 16;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = S * px;
-  const ctx = canvas.getContext('2d')!;
-  const base = ['#3d5a2c', '#38383b', '#6b5640'];
-  for (let z = 0; z < S; z++) {
-    for (let x = 0; x < S; x++) {
-      const f = map.floor[z * S + x];
-      ctx.fillStyle = base[f];
-      ctx.fillRect(x * px, z * px, px, px);
-      // Speckle noise so large areas don't look flat.
-      for (let k = 0; k < 6; k++) {
-        const l = Math.random() < 0.5 ? 255 : 0;
-        ctx.fillStyle = `rgba(${l},${l},${l},${0.04 + Math.random() * 0.05})`;
-        ctx.fillRect(x * px + Math.random() * px, z * px + Math.random() * px, 2 + Math.random() * 3, 2 + Math.random() * 3);
-      }
-      if (f === FLOOR_INDOOR) {
-        ctx.fillStyle = 'rgba(0,0,0,0.25)';
-        ctx.fillRect(x * px, z * px + px - 1, px, 1);
-      }
-    }
+/** Soft irregular blood splat, drawn once. */
+function splatTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d')!;
+  for (let k = 0; k < 14; k++) {
+    const r = k === 0 ? 34 : 6 + Math.random() * 16;
+    const a = Math.random() * Math.PI * 2, d = k === 0 ? 0 : 20 + Math.random() * 30;
+    const x = 64 + Math.cos(a) * d, y = 64 + Math.sin(a) * d;
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+    grad.addColorStop(0.7, 'rgba(255,255,255,0.8)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
   }
-  // Dashed centre lines on the road cross.
-  ctx.fillStyle = '#c9b35a';
-  const mid = (S / 2) * px;
-  for (let i = 0; i < S * px; i += 24) {
-    if (map.floor[Math.floor(mid / px) * S + Math.floor(i / px)] === FLOOR_ROAD) ctx.fillRect(i, mid - 1, 12, 2);
-    if (map.floor[Math.floor(i / px) * S + Math.floor(mid / px)] === FLOOR_ROAD) ctx.fillRect(mid - 1, i, 2, 12);
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  return tex;
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
-function instanced(geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, shadow: boolean): THREE.InstancedMesh {
+function instanced(geo: THREE.BufferGeometry, mat: THREE.Material, cap: number): THREE.InstancedMesh {
   const m = new THREE.InstancedMesh(geo, mat, cap);
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3).fill(1), 3);
   m.instanceColor.setUsage(THREE.DynamicDrawUsage);
   m.count = 0;
   m.frustumCulled = false;
-  m.castShadow = shadow;
-  m.receiveShadow = shadow;
   return m;
 }
 
-/** Write a Y-rotation + uniform scale + translation matrix straight into an instance buffer. */
+/** Write a Y-rotation + scale + translation matrix straight into an instance buffer. */
 function writeMatrix(a: Float32Array, i: number, angle: number, sx: number, sy: number, sz: number, x: number, y: number, z: number) {
   const c = Math.cos(angle), s = Math.sin(angle), o = i * 16;
   a[o] = c * sx; a[o + 1] = 0; a[o + 2] = -s * sx; a[o + 3] = 0;
@@ -113,35 +94,38 @@ function writeMatrix(a: Float32Array, i: number, angle: number, sx: number, sy: 
 
 function markDirty(m: THREE.InstancedMesh, n: number) {
   m.count = n;
-  m.instanceMatrix.clearUpdateRanges();
-  m.instanceMatrix.addUpdateRange(0, n * 16);
-  m.instanceMatrix.needsUpdate = true;
-  const col = m.instanceColor!;
-  col.clearUpdateRanges();
-  col.addUpdateRange(0, n * 3);
-  col.needsUpdate = true;
+  for (const attr of [m.instanceMatrix, m.instanceColor!]) {
+    attr.clearUpdateRanges();
+    attr.addUpdateRange(0, n * attr.itemSize);
+    attr.needsUpdate = true;
+  }
 }
+
+export type Quality = 'high' | 'low';
 
 export class Renderer {
   readonly gl: THREE.WebGLRenderer;
+  quality: Quality = 'high';
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
-  private readonly sun = new THREE.DirectionalLight(0xffe2c0, 2.4);
+  private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 200);
+  private readonly sun = new THREE.DirectionalLight(0xffd7aa, 3.0);
   private readonly raycaster = new THREE.Raycaster();
   private readonly aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -AIM_HEIGHT);
   private readonly camTarget = new THREE.Vector3();
   private readonly tmpV = new THREE.Vector3();
+  private readonly composer: EffectComposer;
+  private readonly gtao: GTAOPass;
 
-  private readonly zombieMesh: THREE.InstancedMesh;
   private readonly bulletMesh: THREE.InstancedMesh;
   private readonly particleMesh: THREE.InstancedMesh;
   private readonly decalMesh: THREE.InstancedMesh;
-  private readonly player: THREE.Mesh;
-  private readonly playerMat: THREE.MeshLambertMaterial;
-  private readonly muzzleLight = new THREE.PointLight(0xffc070, 0, 9, 1.5);
-  private readonly muzzleMesh: THREE.Mesh;
+  private readonly muzzleLight = new THREE.PointLight(0xffb060, 0, 10, 1.6);
+  private readonly flash: THREE.Mesh;
 
-  private mapGroup = new THREE.Group();
+  private assets: Assets | null = null;
+  private crowd: BakedCrowd | null = null;
+  private avatar: PlayerAvatar | null = null;
+  private world: THREE.Group | null = null;
   private decalsDrawn = 0;
 
   constructor(container: HTMLElement) {
@@ -150,50 +134,81 @@ export class Renderer {
     this.gl.shadowMap.enabled = true;
     this.gl.shadowMap.type = THREE.PCFShadowMap;
     this.gl.toneMapping = THREE.ACESFilmicToneMapping;
+    this.gl.toneMappingExposure = 1.3;
     container.appendChild(this.gl.domElement);
 
-    this.scene.background = new THREE.Color(0x14171c);
-    this.scene.add(new THREE.HemisphereLight(0xb8c4d8, 0x3a3328, 1.3));
+    const bg = new THREE.Color(0x1d2126);
+    this.scene.background = bg;
+    this.scene.fog = new THREE.Fog(bg, 62, 95);
+    this.scene.add(new THREE.HemisphereLight(0xd6e2f2, 0x5c4e3e, 1.7));
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const sc = this.sun.shadow.camera;
-    sc.left = sc.bottom = -26;
-    sc.right = sc.top = 26;
+    sc.left = sc.bottom = -24;
+    sc.right = sc.top = 24;
     sc.near = 1;
-    sc.far = 80;
-    this.sun.shadow.bias = -0.0005;
-    this.sun.shadow.normalBias = 0.03;
-    this.scene.add(this.sun, this.sun.target, this.muzzleLight, this.mapGroup);
+    sc.far = 90;
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 0.04;
+    this.sun.shadow.radius = 3;
+    this.scene.add(this.sun, this.sun.target, this.muzzleLight);
 
-    const lambert = new THREE.MeshLambertMaterial({ vertexColors: true });
-    this.zombieMesh = instanced(zombieGeometry(), lambert, ZOMBIE_CAP, true);
+    // Dark ground beyond the town wall so the edges don't float in a void.
+    const outside = new THREE.Mesh(
+      new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2),
+      new THREE.MeshLambertMaterial({ color: 0x2c2a24 }),
+    );
+    outside.position.set(S / 2, -0.02, S / 2);
+    outside.receiveShadow = true;
+    this.scene.add(outside);
 
-    const bulletGeo = new THREE.BoxGeometry(1, 1, 1);
-    this.bulletMesh = instanced(bulletGeo, new THREE.MeshBasicMaterial({ color: 0xfff1a8 }), BULLET_CAP, false);
-    this.particleMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), PARTICLE_CAP, false);
-
-    const decalGeo = new THREE.CircleGeometry(0.5, 9).rotateX(-Math.PI / 2);
+    this.bulletMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffe9a0 }), BULLET_CAP);
+    this.particleMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), PARTICLE_CAP);
     const decalMat = new THREE.MeshLambertMaterial({
-      color: 0x4a0606, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      map: splatTexture(), color: 0x6a0707, transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     });
-    this.decalMesh = instanced(decalGeo, decalMat, DECAL_CAP, false);
+    this.decalMesh = instanced(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), decalMat, DECAL_CAP);
     this.decalMesh.receiveShadow = true;
 
-    this.playerMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-    this.player = new THREE.Mesh(playerGeometry(), this.playerMat);
-    this.player.castShadow = true;
-    this.muzzleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.3), new THREE.MeshBasicMaterial({ color: 0xffd060 }));
-    this.muzzleMesh.position.set(0.2, 0.98, 0.85);
-    this.player.add(this.muzzleMesh);
+    this.flash = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.5, 0.5),
+      new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    this.scene.add(this.bulletMesh, this.particleMesh, this.decalMesh, this.flash);
 
-    this.scene.add(this.zombieMesh, this.bulletMesh, this.particleMesh, this.decalMesh, this.player);
+    this.composer = new EffectComposer(this.gl);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.gtao = new GTAOPass(this.scene, this.camera);
+    this.gtao.updateGtaoMaterial({ radius: 0.6, distanceExponent: 1, thickness: 1, scale: 1 });
+    this.gtao.blendIntensity = 0.85;
+    this.composer.addPass(this.gtao);
+    this.composer.addPass(new OutputPass());
+    this.composer.addPass(new ShaderPass(VIGNETTE));
+
     this.resize();
     window.addEventListener('resize', () => this.resize());
+  }
+
+  /** Characters need loaded assets; call once before the first setGame. */
+  init(assets: Assets): void {
+    this.assets = assets;
+    this.crowd = new BakedCrowd(assets.zombie, ZCLIPS, ZOMBIE_CAP + CORPSE_CAP, 1.8);
+    this.avatar = new PlayerAvatar(assets.player);
+    this.scene.add(this.crowd.mesh, this.avatar.root);
+  }
+
+  setQuality(q: Quality): void {
+    this.quality = q;
+    this.gl.setPixelRatio(q === 'high' ? Math.min(window.devicePixelRatio, 2) : 1);
+    this.resize();
   }
 
   resize(): void {
     const w = window.innerWidth, h = window.innerHeight;
     this.gl.setSize(w, h);
+    this.composer.setPixelRatio(this.gl.getPixelRatio());
+    this.composer.setSize(w, h);
     const aspect = w / h;
     // Keep roughly the same visible area on tall (phone) screens.
     const vh = aspect < 1 ? VIEW_HEIGHT / Math.max(aspect, 0.6) : VIEW_HEIGHT;
@@ -206,50 +221,19 @@ export class Renderer {
 
   /** Rebuild static map geometry for a new run. */
   setGame(game: Game): void {
-    this.scene.remove(this.mapGroup);
-    this.mapGroup.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
-        o.geometry.dispose();
-        const m = o.material as THREE.MeshLambertMaterial;
-        m.map?.dispose();
-        m.dispose();
-      }
-    });
-    this.mapGroup = new THREE.Group();
-
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(S, S).rotateX(-Math.PI / 2),
-      new THREE.MeshLambertMaterial({ map: floorTexture(game.map) }),
-    );
-    floor.position.set(S / 2, 0, S / 2);
-    floor.receiveShadow = true;
-    this.mapGroup.add(floor);
-
-    const blocks = game.map.blocks;
-    const unit = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-    const blockMesh = new THREE.InstancedMesh(unit, new THREE.MeshLambertMaterial(), blocks.length);
-    const m = new THREE.Matrix4(), col = new THREE.Color();
-    blocks.forEach((b, i) => {
-      m.makeScale(b.w, b.h, b.d).setPosition(b.x + b.w / 2, 0, b.z + b.d / 2);
-      blockMesh.setMatrixAt(i, m);
-      blockMesh.setColorAt(i, col.setHex(b.color).multiplyScalar(0.9 + Math.random() * 0.2));
-    });
-    blockMesh.castShadow = blockMesh.receiveShadow = true;
-    this.mapGroup.add(blockMesh);
-
-    // Car cabins sit on top of the car bodies.
-    const cars = blocks.filter((b) => b.kind === 'car');
-    if (cars.length) {
-      const cabins = new THREE.InstancedMesh(unit.clone(), new THREE.MeshLambertMaterial({ color: 0x9fb4c4 }), cars.length);
-      cars.forEach((b, i) => {
-        m.makeScale(b.w * (b.w > b.d ? 0.5 : 0.8), 0.5, b.d * (b.d > b.w ? 0.5 : 0.8)).setPosition(b.x + b.w / 2, b.h, b.z + b.d / 2);
-        cabins.setMatrixAt(i, m);
+    if (this.world) {
+      this.scene.remove(this.world);
+      // Prop geometry and materials belong to the shared assets; only our own builds are freed.
+      this.world.traverse((o) => {
+        if (o instanceof THREE.Mesh && !(o instanceof THREE.InstancedMesh)) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
       });
-      cabins.castShadow = true;
-      this.mapGroup.add(cabins);
     }
-    this.scene.add(this.mapGroup);
-
+    this.world = buildWorld(game.map, this.assets!);
+    this.scene.add(this.world);
+    this.avatar!.reset();
     this.decalsDrawn = 0;
     this.decalMesh.count = 0;
     this.camTarget.set(game.player.x, 0, game.player.z);
@@ -267,7 +251,7 @@ export class Renderer {
   /** Move the camera to follow the player. Call before screenToWorld each frame. */
   updateCamera(game: Game, dt: number): void {
     const p = game.player;
-    this.camTarget.lerp(this.tmpV.set(p.x, 0, p.z), 1 - Math.exp(-10 * dt));
+    this.camTarget.lerp(this.tmpV.set(p.x, 0, p.z), 1 - Math.exp(-8 * dt));
     const sh = game.shake;
     this.camera.position.copy(this.camTarget).add(CAM_OFFSET);
     this.camera.position.x += (Math.random() - 0.5) * sh;
@@ -276,50 +260,94 @@ export class Renderer {
     this.camera.updateMatrixWorld();
   }
 
-  render(game: Game): void {
+  render(game: Game, dt: number): void {
     const p = game.player;
-    this.player.position.set(p.x, 0, p.z);
-    this.player.rotation.y = p.angle;
-    this.playerMat.emissive.setRGB(p.hurt * 2.5, 0, 0);
-    this.muzzleMesh.visible = game.muzzle > 0;
-    this.muzzleMesh.rotation.z = Math.random() * Math.PI;
-    this.muzzleLight.intensity = game.muzzle > 0 ? 25 : 0;
-    this.muzzleLight.position.set(p.x + Math.sin(p.angle) * 0.9, 1.1, p.z + Math.cos(p.angle) * 0.9);
+    const av = this.avatar!;
+    av.update(p, game.time, dt);
+    av.setGround(game.map.groundHeight(p.x, p.z));
+
+    // Muzzle flash at the gun's tip, facing the camera.
+    const on = game.muzzle > 0;
+    this.flash.visible = on;
+    this.muzzleLight.intensity = on ? 30 : 0;
+    if (on) {
+      av.muzzle.getWorldPosition(this.tmpV);
+      this.flash.position.copy(this.tmpV);
+      this.flash.quaternion.copy(this.camera.quaternion);
+      this.flash.rotateZ(Math.random() * Math.PI);
+      this.flash.scale.setScalar(0.6 + Math.random() * 0.5);
+      this.muzzleLight.position.copy(this.tmpV);
+    }
 
     // Sun and its shadow box follow the camera target, snapped to whole units to limit shimmer.
     const tx = Math.round(this.camTarget.x), tz = Math.round(this.camTarget.z);
-    this.sun.position.set(tx - 14, 30, tz + 8);
+    this.sun.position.set(tx - 22, 34, tz + 14);
     this.sun.target.position.set(tx, 0, tz);
     this.sun.target.updateMatrixWorld();
 
-    this.drawZombies(game);
+    this.drawZombies(game, dt);
     this.drawBullets(game);
     this.drawParticles(game);
     this.drawDecals(game);
-    this.gl.render(this.scene, this.camera);
+    if (this.quality === 'high') this.composer.render(dt);
+    else this.gl.render(this.scene, this.camera);
   }
 
-  private drawZombies(game: Game) {
-    const zs = game.zombies, mesh = this.zombieMesh;
-    const a = mesh.instanceMatrix.array as Float32Array;
-    const col = mesh.instanceColor!.array as Float32Array;
+  private drawZombies(game: Game, dt: number) {
+    const zs = game.zombies, crowd = this.crowd!, map = game.map;
+    const a = crowd.mesh.instanceMatrix.array as Float32Array;
+    const col = crowd.mesh.instanceColor!.array as Float32Array;
+    const clipDur = (c: string) => crowd.clips[c].duration;
     for (let i = 0; i < zs.n; i++) {
-      const fl = zs.flash[i];
-      const sc = 1 + fl * 1.5;
-      const bob = Math.abs(Math.sin(zs.phase[i])) * 0.07;
-      const y = (zs.rise[i] - 1) * 1.6 + bob;
-      writeMatrix(a, i, zs.angle[i], sc, sc, sc, zs.x[i], y, zs.z[i]);
-      const t = fl > 0 ? 4 : zs.tint[i];
-      col[i * 3] = t; col[i * 3 + 1] = t; col[i * 3 + 2] = t;
+      let clip: ZClip, t: number, loop = false;
+      if (zs.rise[i] < 1) { clip = ZClip.Spawn; t = zs.rise[i] * clipDur('SPAWN'); }
+      else if (zs.atkT[i] >= 0) { clip = ZClip.Attack; t = (zs.atkT[i] / ATTACK_TIME) * clipDur('ATK'); }
+      else if (zs.hitT[i] >= 0) { clip = ZClip.Hit; t = zs.hitT[i] * 1.6; }
+      else if (zs.runner[i]) { clip = ZClip.Run; t = zs.phase[i] / RUN_STRIDE; loop = true; }
+      else { clip = ZClip.Walk; t = zs.phase[i] / WALK_STRIDE; loop = true; }
+      const row = crowd.row(ZCLIPS[clip], t, loop);
+      if (clip !== zs.animClip[i]) {
+        // Cross-fade from whatever frame was showing.
+        zs.animPrevRow[i] = zs.animClip[i] < 0 ? row : zs.animTime[i];
+        zs.animFade[i] = zs.animClip[i] < 0 ? 0 : 1;
+        zs.animClip[i] = clip;
+      }
+      zs.animFade[i] = Math.max(0, zs.animFade[i] - dt / FADE_TIME);
+      zs.animTime[i] = row;
+      crowd.setFrame(i, row, zs.animPrevRow[i], zs.animFade[i]);
+
+      const x = zs.x[i], z = zs.z[i];
+      writeMatrix(a, i, zs.angle[i] + ZOMBIE_YAW, 1, 1, 1, x, map.groundHeight(x, z), z);
+      if (zs.flash[i] > 0) {
+        col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = 3;
+      } else {
+        // A per-zombie colour cast so the horde isn't one person cloned.
+        const t = zs.tint[i] * 1.15, h = zs.tint[i] * 97;
+        col[i * 3] = t * (1 + 0.12 * Math.sin(h));
+        col[i * 3 + 1] = t * (1 + 0.08 * Math.sin(h * 1.7));
+        col[i * 3 + 2] = t * (1 + 0.12 * Math.sin(h * 2.3));
+      }
     }
-    markDirty(mesh, zs.n);
+
+    // Corpses: the death clip plays out, then they sink away.
+    const c = game.corpses, deadRowsEnd = clipDur('DEAD');
+    let n = zs.n;
+    for (let j = 0; j < c.n && n < ZOMBIE_CAP + CORPSE_CAP; j++, n++) {
+      const row = crowd.row('DEAD', Math.min(c.t[j], deadRowsEnd), false);
+      crowd.setFrame(n, row, row, 0);
+      const sink = Math.max(0, c.t[j] - (CORPSE_LIFE - 3)) / 3;
+      writeMatrix(a, n, c.angle[j] + ZOMBIE_YAW, 1, 1, 1, c.x[j], map.groundHeight(c.x[j], c.z[j]) - sink * 0.6, c.z[j]);
+      const k = c.tint[j] * 0.85;
+      col[n * 3] = k; col[n * 3 + 1] = k; col[n * 3 + 2] = k;
+    }
+    crowd.commit(n);
   }
 
   private drawBullets(game: Game) {
     const b = game.bullets, mesh = this.bulletMesh;
     const a = mesh.instanceMatrix.array as Float32Array;
     for (let i = 0; i < b.n; i++) {
-      writeMatrix(a, i, Math.atan2(b.vx[i], b.vz[i]), 0.07, 0.07, 0.7, b.x[i], 0.98, b.z[i]);
+      writeMatrix(a, i, Math.atan2(b.vx[i], b.vz[i]), 0.05, 0.05, 0.9, b.x[i], AIM_HEIGHT, b.z[i]);
     }
     markDirty(mesh, b.n);
   }
@@ -345,8 +373,9 @@ export class Renderer {
     const a = mesh.instanceMatrix.array as Float32Array;
     const from = Math.max(this.decalsDrawn, fx.decalCount - DECAL_CAP);
     for (let k = from; k < fx.decalCount; k++) {
-      const i = k % DECAL_CAP, s = fx.decalScale[i];
-      writeMatrix(a, i, fx.decalRot[i], s, 1, s, fx.decalX[i], 0.01, fx.decalZ[i]);
+      const i = k % DECAL_CAP, s = fx.decalScale[i] * 1.4;
+      const x = fx.decalX[i], z = fx.decalZ[i];
+      writeMatrix(a, i, fx.decalRot[i], s, 1, s, x, game.map.groundHeight(x, z) + 0.015, z);
     }
     this.decalsDrawn = fx.decalCount;
     mesh.count = Math.min(fx.decalCount, DECAL_CAP);

@@ -14,7 +14,7 @@ Art comes from free CC0 and Boost-licensed packs (see `CREDITS.md`). The trimmed
 in `public/assets/`; to rebuild them from the original packs run `node tools/build-assets.mjs <packs-dir>`.
 
 To publish as a claude.ai Artifact (which doesn't serve `.glb`), build with `VITE_MODEL_EXT=json npm run build`
-and run `node tools/package-artifact.mjs dist <out-dir>`; it turns the models into self-contained glTF JSON.
+and run `node tools/package-artifact.mjs dist <out-dir>`; it wraps each model as base64 in a .json file (the host blocks data: URIs).
 
 Add `?hq` to the URL to keep full graphics quality on slow machines (otherwise ambient occlusion and
 high-DPI rendering switch off when the frame rate drops below about 45 fps).

@@ -2,12 +2,13 @@ import './style.css';
 import { loadAssets } from './assets';
 import { MAX_STEP } from './config';
 import { Game, type Controls } from './game';
+import { buy, loadMeta, PERKS, saveMeta } from './meta';
 import { WEAPONS } from './weapons';
 import { Hud } from './hud';
 import { Input } from './input';
 import { Renderer, SCREEN_RIGHT, SCREEN_UP } from './renderer';
 
-type State = 'loading' | 'menu' | 'playing' | 'paused' | 'upgrade' | 'over';
+type State = 'loading' | 'menu' | 'shop' | 'playing' | 'paused' | 'upgrade' | 'over';
 
 const BEST_KEY = 'hidupmati.best';
 
@@ -18,7 +19,10 @@ const renderer = new Renderer(app);
 const hud = new Hud();
 const controls: Controls = { moveX: 0, moveZ: 0, aimX: 0, aimZ: 0, firing: false, weapon: -1, build: false };
 
-let game = new Game(Math.random() * 1e9);
+const meta = loadMeta();
+let game = new Game(Math.random() * 1e9, meta.perks);
+/** Scrap from the run that just ended, shown once on the game-over screen. */
+let lastScrap = 0;
 let state: State = 'loading';
 
 function loadBest(): { wave: number; kills: number } {
@@ -57,8 +61,21 @@ function setState(next: State) {
         <div><b>Hold click</b> shoot</div><div><b>E / right click</b> barricade</div>
         <div><b>1 2 3</b> switch weapon</div><div><b>Esc</b> pause</div>
       </div>
+      <div class="controls"><div><b>Walk over crates</b> scavenge</div><div><b>Scrap</b> ${meta.scrap}</div></div>
       ${best.wave ? `<p class="best">Best: wave ${best.wave}, ${best.kills} kills</p>` : ''}
-      <button id="go">Click to start</button>`);
+      <button id="go">Click to start</button>
+      <button id="shop" class="alt">Survivor shop</button>`);
+  } else if (next === 'shop') {
+    const cards = PERKS.map((p) => {
+      const owned = meta.perks.includes(p.id);
+      return `<button class="card${owned ? ' owned' : ''}" data-buy="${p.id}" ${owned ? 'disabled' : ''}>
+        <b>${p.title}</b><span>${p.desc}</span><em>${owned ? 'Owned' : `${p.cost} scrap`}</em></button>`;
+    }).join('');
+    showScreen(`
+      <h1 class="sm">Survivor <span>shop</span></h1>
+      <p class="tag">Scrap: ${meta.scrap}. Earned from kills, cleared waves and loot.</p>
+      <div class="cards">${cards}</div>
+      <button id="back" class="alt">Back</button>`);
   } else if (next === 'upgrade') {
     const cards = (game.choices ?? []).map((u, i) => `
       <button class="card" data-i="${i}"><kbd>${i + 1}</kbd><b>${u.title}</b><span>${u.desc}</span></button>`).join('');
@@ -71,9 +88,13 @@ function setState(next: State) {
   } else {
     saveBest(game.wave, game.kills);
     const best = loadBest();
+    lastScrap = game.scrap;
+    meta.scrap += lastScrap;
+    saveMeta(meta);
     showScreen(`
       <h1 class="dead">You died</h1>
       <p class="tag">Reached wave ${game.wave} with ${game.kills} kills</p>
+      <p class="tag">+${lastScrap} scrap (${meta.scrap} total)</p>
       <p class="best">Best: wave ${best.wave}, ${best.kills} kills</p>
       <button id="go">Click to try again</button>`);
   }
@@ -89,13 +110,21 @@ function pickUpgrade(i: number) {
 
 screen.addEventListener('click', (e) => {
   if (state === 'loading') return;
+  const target = e.target as HTMLElement;
+  if (state === 'menu' && target.closest('#shop')) { setState('shop'); return; }
+  if (state === 'shop') {
+    const id = target.closest<HTMLElement>('[data-buy]')?.dataset.buy;
+    if (id && buy(meta, id)) setState('shop');
+    else if (target.closest('#back')) setState('menu');
+    return;
+  }
   if (state === 'upgrade') {
     const card = (e.target as HTMLElement).closest<HTMLElement>('[data-i]');
     if (card) pickUpgrade(Number(card.dataset.i));
     return;
   }
-  if (state === 'over') {
-    game = new Game(Math.random() * 1e9);
+  if (state === 'over' || state === 'menu') {
+    game = new Game(Math.random() * 1e9, meta.perks);
     renderer.setGame(game);
   }
   input.mouseDown = false;

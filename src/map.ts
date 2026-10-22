@@ -22,6 +22,13 @@ export interface Block {
   scale?: number;
 }
 
+/** A crate to scavenge; walking over it opens it. */
+export interface Loot {
+  x: number;
+  z: number;
+  open: boolean;
+}
+
 /** Cosmetic, non-colliding scenery. */
 export interface Decor {
   model: PropModel;
@@ -48,6 +55,7 @@ export class GameMap {
   readonly floor = new Uint8Array(S * S);
   readonly blocks: Block[] = [];
   readonly decor: Decor[] = [];
+  readonly loot: Loot[] = [];
   /** Health of the barricade in each cell, 0 where there is none. */
   readonly barricadeHp = new Float32Array(S * S);
   readonly barricadeMax = new Float32Array(S * S);
@@ -166,7 +174,8 @@ export class GameMap {
     this.addBlock(S - 1, 1, 1, S - 2, 2.6, outer);
 
     let placed = 0;
-    for (let i = 0; i < 300 && placed < 10; i++) {
+    const buildings = 8 + Math.floor(rnd() * 6);
+    for (let i = 0; i < 300 && placed < buildings; i++) {
       const w = 7 + Math.floor(rnd() * 6);
       const d = 6 + Math.floor(rnd() * 5);
       const x = 2 + Math.floor(rnd() * (S - w - 4));
@@ -190,7 +199,8 @@ export class GameMap {
     }
 
     // Trees and rocks in the overgrown lots.
-    for (let i = 0, n = 0; i < 500 && n < 34; i++) {
+    const trees = 20 + Math.floor(rnd() * 30);
+    for (let i = 0, n = 0; i < 500 && n < trees; i++) {
       const x = 2 + Math.floor(rnd() * (S - 4));
       const z = 2 + Math.floor(rnd() * (S - 4));
       if (!this.areaFree(x, z, 1, 1, 1, FLOOR_GRASS)) continue;
@@ -238,6 +248,12 @@ export class GameMap {
     hwall(z + d - 1, doors.has(1));
     vwall(x, doors.has(2));
     vwall(x + w - 1, doors.has(3));
+
+    // Supplies to scavenge inside.
+    for (let k = 0; k < 2; k++) {
+      const lx = x + 1 + Math.floor(rnd() * (w - 2)), lz = z + 1 + Math.floor(rnd() * (d - 2));
+      if (!this.isSolid(lx, lz)) this.loot.push({ x: lx + 0.5, z: lz + 0.5, open: false });
+    }
 
     // An AC unit against a wall outside, where it doesn't block a door.
     for (let tries = 0; tries < 10; tries++) {

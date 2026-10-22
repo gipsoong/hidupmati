@@ -60,3 +60,9 @@ kbd { display: inline-block; min-width: 20px; margin-right: 6px; padding: 0 5px;
 #screen button.card span { opacity: 0.85; line-height: 1.35; }
 #screen button.card:hover { background: #7a2118; }
 #screen h1.sm { font-size: clamp(32px, 6vw, 56px); }
+
+#screen button.alt { font-size: 14px; padding: 8px 20px; border-color: #666; }
+#screen button.alt:hover { background: #444; }
+#screen button.card em { margin-top: auto; font-style: normal; color: #e8c170; }
+#screen button.card.owned { opacity: 0.5; cursor: default; }
+#screen button.card.owned:hover { background: rgba(20, 22, 28, 0.9); }

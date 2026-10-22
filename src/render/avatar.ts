@@ -75,6 +75,36 @@ function pistol(): THREE.Group {
   return g;
 }
 
+function smg(): THREE.Group {
+  const metal = new THREE.MeshStandardMaterial({ color: 0x24262a, metalness: 0.7, roughness: 0.4 });
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.05, 0.3), metal);
+  body.position.set(0, 0.03, 0.08);
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.11, 0.04), metal);
+  mag.position.set(0, -0.04, 0.08);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.09, 0.04), metal);
+  handle.position.set(0, -0.02, -0.02);
+  handle.rotation.x = 0.25;
+  g.add(body, mag, handle);
+  g.traverse((o) => { o.castShadow = true; });
+  return g;
+}
+
+function shotgun(): THREE.Group {
+  const metal = new THREE.MeshStandardMaterial({ color: 0x2b2d30, metalness: 0.7, roughness: 0.35 });
+  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4426, roughness: 0.8 });
+  const g = new THREE.Group();
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.035, 0.6), metal);
+  barrel.position.set(0, 0.035, 0.28);
+  const pump = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 0.16), wood);
+  pump.position.set(0, 0.0, 0.25);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.2), wood);
+  stock.position.set(0, 0.0, -0.1);
+  g.add(barrel, pump, stock);
+  g.traverse((o) => { o.castShadow = true; });
+  return g;
+}
+
 function backpack(): THREE.Mesh {
   const m = new THREE.Mesh(
     new THREE.BoxGeometry(0.3, 0.38, 0.16),
@@ -118,7 +148,9 @@ export class PlayerAvatar {
   private readonly aim: THREE.AnimationAction;
   private readonly hit: THREE.AnimationAction;
   private readonly death: THREE.AnimationAction;
-  private readonly gun: THREE.Group;
+  private readonly gun = new THREE.Group();
+  private readonly guns = [pistol(), smg(), shotgun()];
+  private weapon = 0;
   private readonly gunBase = new THREE.Vector3();
   readonly muzzle = new THREE.Object3D();
   private yaw = 0;
@@ -175,9 +207,8 @@ export class PlayerAvatar {
     const hand = bone('hand_r');
     const grip = hand.getWorldPosition(new THREE.Vector3())
       .lerp(bone('middle_01_r').getWorldPosition(new THREE.Vector3()), 0.6);
-    this.gun = pistol();
-    this.muzzle.position.set(0, 0.03, 0.17);
-    this.gun.add(this.muzzle);
+    this.gun.add(...this.guns, this.muzzle);
+    this.setWeapon(0);
     attach(hand, this.gun, grip, new THREE.Quaternion());
     this.gunBase.copy(this.gun.position);
 
@@ -189,7 +220,14 @@ export class PlayerAvatar {
     this.idleU.setEffectiveWeight(1);
   }
 
+  private setWeapon(i: number) {
+    this.weapon = i;
+    this.guns.forEach((g, k) => { g.visible = k === i; });
+    this.muzzle.position.set(0, 0.03, [0.17, 0.3, 0.58][i]);
+  }
+
   update(p: Player, time: number, dt: number): void {
+    if (p.weapon !== this.weapon) this.setWeapon(p.weapon);
     this.root.position.set(p.x, this.root.position.y, p.z);
 
     if (p.deadT >= 0) {

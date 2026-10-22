@@ -48,6 +48,11 @@ export class GameMap {
   readonly floor = new Uint8Array(S * S);
   readonly blocks: Block[] = [];
   readonly decor: Decor[] = [];
+  /** Health of the barricade in each cell, 0 where there is none. */
+  readonly barricadeHp = new Float32Array(S * S);
+  readonly barricadeMax = new Float32Array(S * S);
+  /** Cell indices of live barricades, for drawing. */
+  readonly barricades: number[] = [];
 
   constructor(seed: number) {
     this.generate(mulberry32(seed));
@@ -56,6 +61,34 @@ export class GameMap {
   isSolid(cx: number, cz: number): boolean {
     if (cx < 0 || cz < 0 || cx >= S || cz >= S) return true;
     return this.solid[cz * S + cx] === 1;
+  }
+
+  /** Solid and not a barricade: what blocks bullets and zombie pathing. */
+  isWall(cx: number, cz: number): boolean {
+    if (cx < 0 || cz < 0 || cx >= S || cz >= S) return true;
+    const c = cz * S + cx;
+    return this.solid[c] === 1 && this.barricadeHp[c] === 0;
+  }
+
+  addBarricade(cx: number, cz: number, hp: number): void {
+    const c = cz * S + cx;
+    this.solid[c] = 1;
+    this.barricadeHp[c] = hp;
+    this.barricadeMax[c] = hp;
+    this.barricades.push(c);
+  }
+
+  /** Returns true when the barricade breaks. */
+  damageBarricade(c: number, dmg: number): boolean {
+    if (this.barricadeHp[c] <= 0) return false;
+    this.barricadeHp[c] -= dmg;
+    if (this.barricadeHp[c] > 0) return false;
+    this.barricadeHp[c] = 0;
+    this.solid[c] = 0;
+    const k = this.barricades.indexOf(c);
+    this.barricades[k] = this.barricades[this.barricades.length - 1];
+    this.barricades.pop();
+    return true;
   }
 
   /** Push a circle out of any solid cells it overlaps. Result goes to `pushed`. */

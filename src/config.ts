@@ -23,3 +23,16 @@ export const MAX_STEP = 1 / 60;
 /** Zombie attack: total swing time and when in the swing the hit lands. */
 export const ATTACK_TIME = 1.0;
 export const ATTACK_HIT_AT = 0.35;
+
+/** Zombie kinds: index into the tables below. */
+export const KIND_WALKER = 0;
+export const KIND_RUNNER = 1;
+export const KIND_BRUTE = 2;
+export const KIND_SCALE = [1, 0.95, 1.4];
+/** Damage per swing at the player; barricades take 2.5x. */
+export const KIND_DAMAGE = [10, 8, 28];
+/** How much of a bullet's shove a zombie takes. */
+export const KIND_KNOCK = [1, 1, 0.15];
+
+export const BARRICADE_HP = 120;
+export const BARRICADE_CAP = 96;

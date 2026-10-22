@@ -20,11 +20,11 @@ export class FlowField {
 
   constructor(private readonly map: GameMap) {}
 
-  /** Diagonal moves only when both orthogonal neighbours are open, so zombies don't clip corners. */
+  /** Barricades count as open: zombies path through them and break them down. Diagonal moves only when both orthogonal neighbours are open, so zombies don't clip corners. */
   private canStep(cx: number, cz: number, k: number): boolean {
     const nx = cx + NX[k], nz = cz + NZ[k];
-    if (this.map.isSolid(nx, nz)) return false;
-    return k < 4 || (!this.map.isSolid(nx, cz) && !this.map.isSolid(cx, nz));
+    if (this.map.isWall(nx, nz)) return false;
+    return k < 4 || (!this.map.isWall(nx, cz) && !this.map.isWall(cx, nz));
   }
 
   update(px: number, pz: number): void {

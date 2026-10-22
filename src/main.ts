@@ -2,11 +2,12 @@ import './style.css';
 import { loadAssets } from './assets';
 import { MAX_STEP } from './config';
 import { Game, type Controls } from './game';
+import { WEAPONS } from './weapons';
 import { Hud } from './hud';
 import { Input } from './input';
 import { Renderer, SCREEN_RIGHT, SCREEN_UP } from './renderer';
 
-type State = 'loading' | 'menu' | 'playing' | 'paused' | 'over';
+type State = 'loading' | 'menu' | 'playing' | 'paused' | 'upgrade' | 'over';
 
 const BEST_KEY = 'hidupmati.best';
 
@@ -15,7 +16,7 @@ const screen = document.getElementById('screen')!;
 const input = new Input(app);
 const renderer = new Renderer(app);
 const hud = new Hud();
-const controls: Controls = { moveX: 0, moveZ: 0, aimX: 0, aimZ: 0, firing: false };
+const controls: Controls = { moveX: 0, moveZ: 0, aimX: 0, aimZ: 0, firing: false, weapon: -1, build: false };
 
 let game = new Game(Math.random() * 1e9);
 let state: State = 'loading';
@@ -53,10 +54,18 @@ function setState(next: State) {
       <p class="tag">Survive the horde. Every wave is worse.</p>
       <div class="controls">
         <div><b>WASD</b> move</div><div><b>Mouse</b> aim</div>
-        <div><b>Hold click</b> shoot</div><div><b>Esc</b> pause</div>
+        <div><b>Hold click</b> shoot</div><div><b>E / right click</b> barricade</div>
+        <div><b>1 2 3</b> switch weapon</div><div><b>Esc</b> pause</div>
       </div>
       ${best.wave ? `<p class="best">Best: wave ${best.wave}, ${best.kills} kills</p>` : ''}
       <button id="go">Click to start</button>`);
+  } else if (next === 'upgrade') {
+    const cards = (game.choices ?? []).map((u, i) => `
+      <button class="card" data-i="${i}"><kbd>${i + 1}</kbd><b>${u.title}</b><span>${u.desc}</span></button>`).join('');
+    showScreen(`
+      <h1 class="sm">Wave ${game.wave} <span>cleared</span></h1>
+      <p class="tag">Pick an upgrade</p>
+      <div class="cards">${cards}</div>`);
   } else if (next === 'paused') {
     showScreen(`<h1>Paused</h1><button id="go">Click to resume</button>`);
   } else {
@@ -70,8 +79,21 @@ function setState(next: State) {
   }
 }
 
-screen.addEventListener('click', () => {
+function pickUpgrade(i: number) {
+  if (state !== 'upgrade' || !game.choices?.[i]) return;
+  game.pickUpgrade(i);
+  input.mouseDown = false;
+  input.clearPresses();
+  setState('playing');
+}
+
+screen.addEventListener('click', (e) => {
   if (state === 'loading') return;
+  if (state === 'upgrade') {
+    const card = (e.target as HTMLElement).closest<HTMLElement>('[data-i]');
+    if (card) pickUpgrade(Number(card.dataset.i));
+    return;
+  }
   if (state === 'over') {
     game = new Game(Math.random() * 1e9);
     renderer.setGame(game);
@@ -80,6 +102,11 @@ screen.addEventListener('click', () => {
   setState('playing');
 });
 window.addEventListener('blur', () => { if (state === 'playing') setState('paused'); });
+window.addEventListener('keydown', (e) => {
+  if (state !== 'upgrade') return;
+  const i = Number(e.key) - 1;
+  if (i >= 0 && i < 3) pickUpgrade(i);
+});
 
 const aim = { x: 0, z: 0 };
 let last = performance.now();
@@ -89,7 +116,6 @@ function frame(now: number) {
   last = now;
 
   if (state === 'playing' && (input.consume('Escape') || input.consume('KeyP'))) setState('paused');
-  input.clearPresses();
 
   renderer.updateCamera(game, dt);
   if (renderer.screenToWorld(input.ndcX, input.ndcY, aim)) {
@@ -100,12 +126,16 @@ function frame(now: number) {
   controls.moveX = ax.x * SCREEN_RIGHT.x + ax.y * SCREEN_UP.x;
   controls.moveZ = ax.x * SCREEN_RIGHT.z + ax.y * SCREEN_UP.z;
   controls.firing = input.mouseDown;
+  controls.weapon = -1;
+  for (let i = 0; i < WEAPONS.length; i++) if (input.consume(`Digit${i + 1}`)) controls.weapon = i;
+  controls.build = input.consume('KeyE') || input.consume('Mouse2');
 
   if (state === 'playing') {
     // Variable timestep, split so no single step exceeds MAX_STEP.
     const steps = Math.ceil(dt / MAX_STEP);
     for (let i = 0; i < steps; i++) game.update(dt / steps, controls);
     if (game.over) setState('over');
+    else if (game.choices) setState('upgrade');
   }
 
   if (state !== 'loading') {
@@ -113,6 +143,7 @@ function frame(now: number) {
     hud.update(game, dt, input.screenX, input.screenY, state === 'playing');
     autoQuality(dt);
   }
+  input.clearPresses();
   requestAnimationFrame(frame);
 }
 

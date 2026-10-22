@@ -8,7 +8,7 @@ npm run dev     # local dev server
 npm run build   # type-check and build to dist/
 ```
 
-Controls: WASD to move, mouse to aim, hold left click to shoot, Esc to pause.
+Controls: WASD to move, mouse to aim, hold left click to shoot, 1/2/3 to switch weapon, E or right click to barricade, Esc to pause.
 
 Art comes from free CC0 and Boost-licensed packs (see `CREDITS.md`). The trimmed, web-sized files are committed
 in `public/assets/`; to rebuild them from the original packs run `node tools/build-assets.mjs <packs-dir>`.

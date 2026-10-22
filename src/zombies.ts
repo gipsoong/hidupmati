@@ -1,4 +1,4 @@
-import { ZOMBIE_CAP } from './config';
+import { KIND_RUNNER, ZOMBIE_CAP } from './config';
 
 /** Struct-of-arrays horde storage; live zombies are packed in [0, n). */
 export class Zombies {
@@ -18,6 +18,10 @@ export class Zombies {
   readonly attackCd = new Float32Array(ZOMBIE_CAP);
   readonly tint = new Float32Array(ZOMBIE_CAP);
   readonly runner = new Uint8Array(ZOMBIE_CAP);
+  /** KIND_WALKER, KIND_RUNNER or KIND_BRUTE. */
+  readonly kind = new Uint8Array(ZOMBIE_CAP);
+  /** Barricade cell the current swing is aimed at, or -1. */
+  readonly bash = new Int32Array(ZOMBIE_CAP);
   /** Seconds since the current attack started, or -1. */
   readonly atkT = new Float32Array(ZOMBIE_CAP);
   /** Seconds since the last bullet hit, or -1. */
@@ -30,11 +34,11 @@ export class Zombies {
 
   private readonly fields = [
     this.x, this.z, this.vx, this.vz, this.hp, this.speed, this.angle,
-    this.phase, this.rise, this.flash, this.attackCd, this.tint, this.runner,
+    this.phase, this.rise, this.flash, this.attackCd, this.tint, this.runner, this.kind, this.bash,
     this.atkT, this.hitT, this.animClip, this.animTime, this.animPrevRow, this.animFade,
   ];
 
-  spawn(x: number, z: number, hp: number, speed: number, runner: boolean): void {
+  spawn(x: number, z: number, hp: number, speed: number, kind: number): void {
     if (this.n >= ZOMBIE_CAP) return;
     const i = this.n++;
     for (const f of this.fields) f[i] = 0;
@@ -46,7 +50,9 @@ export class Zombies {
     this.phase[i] = Math.random() * 10;
     this.attackCd[i] = 0.5;
     this.tint[i] = 0.8 + Math.random() * 0.3;
-    this.runner[i] = runner ? 1 : 0;
+    this.kind[i] = kind;
+    this.runner[i] = kind === KIND_RUNNER ? 1 : 0;
+    this.bash[i] = -1;
     this.atkT[i] = -1;
     this.hitT[i] = -1;
     this.animClip[i] = -1;
@@ -69,16 +75,18 @@ export class Corpses {
   readonly z = new Float32Array(CORPSE_CAP);
   readonly angle = new Float32Array(CORPSE_CAP);
   readonly tint = new Float32Array(CORPSE_CAP);
+  readonly kind = new Uint8Array(CORPSE_CAP);
   /** Seconds since death. */
   readonly t = new Float32Array(CORPSE_CAP);
 
-  add(x: number, z: number, angle: number, tint: number): void {
+  add(x: number, z: number, angle: number, tint: number, kind: number): void {
     if (this.n >= CORPSE_CAP) this.remove(0);
     const i = this.n++;
     this.x[i] = x;
     this.z[i] = z;
     this.angle[i] = angle;
     this.tint[i] = tint;
+    this.kind[i] = kind;
     this.t[i] = 0;
   }
 
@@ -95,6 +103,7 @@ export class Corpses {
     this.z[i] = this.z[last];
     this.angle[i] = this.angle[last];
     this.tint[i] = this.tint[last];
+    this.kind[i] = this.kind[last];
     this.t[i] = this.t[last];
   }
 }

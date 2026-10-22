@@ -27,6 +27,7 @@ export class Input {
     });
     target.addEventListener('pointerdown', (e) => {
       if (e.button === 0) this.mouseDown = true;
+      if (e.button === 2) this.pressed.add('Mouse2');
     });
     window.addEventListener('pointerup', (e) => {
       if (e.button === 0) this.mouseDown = false;

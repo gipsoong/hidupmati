@@ -1,13 +1,15 @@
 import { Bullets } from './bullets';
 import {
-  ATTACK_HIT_AT, ATTACK_TIME, BULLET_SPEED, CORPSE_LIFE, MAP_SIZE as S, MAX_ALIVE, PLAYER_MAX_HP, PLAYER_RADIUS, PLAYER_SPEED, RISE_TIME,
-  ZOMBIE_RADIUS,
+  ATTACK_HIT_AT, ATTACK_TIME, BARRICADE_CAP, BARRICADE_HP, BULLET_SPEED, CORPSE_LIFE, KIND_BRUTE, KIND_DAMAGE, KIND_KNOCK, KIND_RUNNER, KIND_SCALE,
+  KIND_WALKER, MAP_SIZE as S, MAX_ALIVE, PLAYER_RADIUS, PLAYER_SPEED, RISE_TIME, ZOMBIE_RADIUS,
 } from './config';
 import { Effects } from './effects';
 import { FlowField, UNREACHABLE } from './flow';
 import { SpatialGrid } from './grid';
 import { GameMap, pushed } from './map';
 import { Player } from './player';
+import { offer, type Upgrade } from './upgrades';
+import { WEAPONS } from './weapons';
 import { Corpses, Zombies } from './zombies';
 
 /** Per-frame player intent, already converted to world space. */
@@ -17,14 +19,18 @@ export interface Controls {
   aimX: number;
   aimZ: number;
   firing: boolean;
+  /** Weapon slot to switch to, or -1. */
+  weapon: number;
+  /** Place a barricade this frame. */
+  build: boolean;
 }
 
 const HIT_RADIUS = 0.42;
 const SEPARATION = ZOMBIE_RADIUS * 2;
 const ATTACK_RANGE = ZOMBIE_RADIUS + PLAYER_RADIUS + 0.25;
-const ZOMBIE_DAMAGE = 10;
-const PISTOL_DAMAGE = 25;
-const PISTOL_COOLDOWN = 0.15;
+/** Wave clears also refill the planks by this much. */
+const PLANKS_PER_WAVE = 3;
+const KILLS_PER_PLANK = 10;
 /** Seconds of death animation before the game-over screen. */
 const DEATH_TIME = 2.2;
 
@@ -47,6 +53,8 @@ export class Game {
   shake = 0;
   /** Seconds left on the muzzle flash. */
   muzzle = 0;
+  /** Upgrades on offer between waves; the game waits until one is picked. */
+  choices: Upgrade[] | null = null;
 
   /** Banner text for the HUD; bannerSeq changes whenever a new one is posted. */
   bannerTitle = '';
@@ -72,7 +80,7 @@ export class Game {
   }
 
   update(dt: number, c: Controls): void {
-    if (this.over) return;
+    if (this.over || this.choices) return;
     this.time += dt;
     const p = this.player;
     if (p.deadT >= 0) {
@@ -93,6 +101,16 @@ export class Game {
     this.muzzle = Math.max(0, this.muzzle - dt);
   }
 
+  /** Take the upgrade at `index` of the current offer and resume play. */
+  pickUpgrade(index: number): void {
+    const u = this.choices?.[index];
+    if (!u) return;
+    const p = this.player;
+    u.apply(p);
+    p.taken[u.id] = (p.taken[u.id] ?? 0) + 1;
+    this.choices = null;
+  }
+
   private announce(title: string, sub: string) {
     this.bannerTitle = title;
     this.bannerSub = sub;
@@ -105,8 +123,9 @@ export class Game {
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
     const k = 1 - Math.exp(-14 * dt);
-    p.vx += (mx * PLAYER_SPEED - p.vx) * k;
-    p.vz += (mz * PLAYER_SPEED - p.vz) * k;
+    const top = PLAYER_SPEED * p.speedMul;
+    p.vx += (mx * top - p.vx) * k;
+    p.vz += (mz * top - p.vz) * k;
     this.map.collideCircle(p.x + p.vx * dt, p.z + p.vz * dt, PLAYER_RADIUS);
     p.x = pushed.x;
     p.z = pushed.z;
@@ -114,18 +133,39 @@ export class Game {
     p.angle = Math.atan2(c.aimX - p.x, c.aimZ - p.z);
     p.fireCd -= dt;
     p.hurt = Math.max(0, p.hurt - dt);
+    if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
+    if (c.weapon >= 0 && c.weapon < WEAPONS.length && p.owned[c.weapon]) p.weapon = c.weapon;
     if (c.firing && p.fireCd <= 0) this.fire();
+    if (c.build) this.placeBarricade();
+  }
+
+  /** Board up the cell in front of the player. */
+  private placeBarricade() {
+    const p = this.player, zs = this.zombies;
+    if (p.planks < 1 || this.map.barricades.length >= BARRICADE_CAP) return;
+    const cx = Math.floor(p.x + Math.sin(p.angle) * 1.2), cz = Math.floor(p.z + Math.cos(p.angle) * 1.2);
+    if (this.map.isSolid(cx, cz)) return;
+    const mx = cx + 0.5, mz = cz + 0.5;
+    if (Math.hypot(p.x - mx, p.z - mz) < 0.9) return;
+    for (let i = 0; i < zs.n; i++) if (Math.abs(zs.x[i] - mx) < 0.9 && Math.abs(zs.z[i] - mz) < 0.9) return;
+    p.planks--;
+    this.map.addBarricade(cx, cz, BARRICADE_HP * p.barricadeMul);
+    this.fx.sparks(mx, mz, 0, 0);
   }
 
   private fire() {
     const p = this.player;
-    const a = p.angle + (Math.random() - 0.5) * 0.06;
-    const dx = Math.sin(a), dz = Math.cos(a);
-    this.bullets.spawn(p.x + dx * 0.8, p.z + dz * 0.8, dx * BULLET_SPEED, dz * BULLET_SPEED, PISTOL_DAMAGE, 0.9);
-    p.fireCd = PISTOL_COOLDOWN;
+    const w = WEAPONS[p.weapon];
+    for (let k = 0; k < w.pellets; k++) {
+      const a = p.angle + (Math.random() - 0.5) * w.spread;
+      const dx = Math.sin(a), dz = Math.cos(a);
+      const speed = w.speed * (0.9 + Math.random() * 0.2);
+      this.bullets.spawn(p.x + dx * w.muzzle, p.z + dz * w.muzzle, dx * speed, dz * speed, w.damage * p.dmgMul, w.life, p.pierce);
+    }
+    p.fireCd = w.cooldown / p.rateMul;
     p.lastShot = this.time;
     this.muzzle = 0.05;
-    this.shake = Math.max(this.shake, 0.06);
+    this.shake = Math.max(this.shake, w.shake);
   }
 
   private updateWaves(dt: number) {
@@ -143,9 +183,11 @@ export class Game {
       }
     } else if (this.zombies.n === 0) {
       this.fighting = false;
-      this.breakTimer = 7;
-      this.player.hp = Math.min(PLAYER_MAX_HP, this.player.hp + 15);
-      this.announce(`Wave ${this.wave} cleared`, '+15 health. Next wave incoming');
+      this.breakTimer = 4;
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + 15);
+      this.player.planks += PLANKS_PER_WAVE;
+      this.announce(`Wave ${this.wave} cleared`, `+15 health, +${PLANKS_PER_WAVE} planks`);
+      this.choices = offer(this.player, 3);
     }
   }
 
@@ -169,11 +211,15 @@ export class Game {
       if (this.flow.dist[cz * S + cx] === UNREACHABLE) continue;
       if (Math.hypot(cx + 0.5 - p.x, cz + 0.5 - p.z) < 20) continue;
       for (let k = 0; k < count; k++) {
-        const runner = Math.random() < Math.min(0.25, 0.04 * this.wave);
-        const speed = runner
-          ? 3.2 + Math.min(1, this.wave * 0.05) + Math.random() * 0.4
-          : this.waveSpeed * (0.8 + Math.random() * 0.4);
-        this.zombies.spawn(cx + 0.2 + Math.random() * 0.6, cz + 0.2 + Math.random() * 0.6, this.waveHp, speed, runner);
+        const w = this.wave, r = Math.random();
+        const brute = w >= 3 && r < (w % 5 === 0 ? 0.2 : Math.min(0.1, 0.02 * (w - 2)));
+        const kind = brute ? KIND_BRUTE : r > 1 - Math.min(0.25, 0.04 * w) ? KIND_RUNNER : KIND_WALKER;
+        const jitter = 0.8 + Math.random() * 0.4;
+        const speed = kind === KIND_RUNNER ? 3.2 + Math.min(1, w * 0.05) + Math.random() * 0.4
+          : kind === KIND_BRUTE ? this.waveSpeed * 0.75
+          : this.waveSpeed * jitter;
+        const hp = kind === KIND_BRUTE ? this.waveHp * 7 : this.waveHp;
+        this.zombies.spawn(cx + 0.2 + Math.random() * 0.6, cz + 0.2 + Math.random() * 0.6, hp, speed, kind);
       }
       return count;
     }
@@ -208,6 +254,17 @@ export class Game {
       if (d > 2.5) {
         const c = SpatialGrid.cell(x, z);
         if (flow.dirX[c] !== 0 || flow.dirZ[c] !== 0) { tx = flow.dirX[c]; tz = flow.dirZ[c]; }
+      }
+      const kind = zs.kind[i];
+      // Something boarded up in the way: start breaking it.
+      if (!attacking && zs.attackCd[i] <= 0) {
+        const bx = Math.floor(x + tx * 0.6), bz = Math.floor(z + tz * 0.6);
+        if (bx >= 0 && bz >= 0 && bx < S && bz < S && this.map.barricadeHp[bz * S + bx] > 0) {
+          zs.atkT[i] = 0;
+          zs.attackCd[i] = 1.3;
+          zs.bash[i] = bz * S + bx;
+          attacking = true;
+        }
       }
       const sp = zs.speed[i] * (attacking ? 0.15 : 1);
       zs.vx[i] += (tx * sp - zs.vx[i]) * turn;
@@ -248,9 +305,10 @@ export class Game {
         p.z -= pz * o * 0.15;
       }
       zs.attackCd[i] -= dt;
-      if (pd < ATTACK_RANGE && zs.attackCd[i] <= 0 && p.deadT < 0) {
+      if (pd < ATTACK_RANGE + (KIND_SCALE[kind] - 1) * 0.5 && zs.attackCd[i] <= 0 && p.deadT < 0) {
         zs.attackCd[i] = 1.3;
         zs.atkT[i] = 0;
+        zs.bash[i] = -1;
       }
 
       this.map.collideCircle(x, z, ZOMBIE_RADIUS);
@@ -272,10 +330,17 @@ export class Game {
   /** The swing connects only if the player is still in reach. */
   private zombieHits(i: number) {
     const p = this.player, zs = this.zombies;
+    const dmg = KIND_DAMAGE[zs.kind[i]];
+    if (zs.bash[i] >= 0) {
+      const c = zs.bash[i];
+      zs.bash[i] = -1;
+      if (this.map.damageBarricade(c, dmg * 2.5)) this.fx.sparks((c % S) + 0.5, ((c / S) | 0) + 0.5, 0, 0);
+      return;
+    }
     const dx = p.x - zs.x[i], dz = p.z - zs.z[i];
     const d = Math.hypot(dx, dz);
-    if (d > ATTACK_RANGE + 0.3 || p.deadT >= 0) return;
-    this.hurtPlayer(ZOMBIE_DAMAGE, dx / (d || 1), dz / (d || 1));
+    if (d > ATTACK_RANGE + 0.3 + (KIND_SCALE[zs.kind[i]] - 1) * 0.5 || p.deadT >= 0) return;
+    this.hurtPlayer(dmg, dx / (d || 1), dz / (d || 1));
   }
 
   private hurtPlayer(dmg: number, dx: number, dz: number) {
@@ -303,7 +368,7 @@ export class Game {
       for (let s = 0; s < STEPS && !dead; s++) {
         x += sx;
         z += sz;
-        if (this.map.isSolid(Math.floor(x), Math.floor(z))) {
+        if (this.map.isWall(Math.floor(x), Math.floor(z))) {
           this.fx.sparks(x, z, dirX, dirZ);
           dead = true;
           break;
@@ -317,9 +382,12 @@ export class Game {
             for (let q = grid.start[c], end = grid.start[c + 1]; q < end; q++) {
               const j = grid.items[q];
               if (zs.hp[j] <= 0 || zs.rise[j] < 0.6) continue;
+              if (j === b.lastHit[i]) continue;
               const ox = zs.x[j] - x, oz = zs.z[j] - z;
-              if (ox * ox + oz * oz > HIT_RADIUS * HIT_RADIUS) continue;
+              const reach = HIT_RADIUS * KIND_SCALE[zs.kind[j]];
+              if (ox * ox + oz * oz > reach * reach) continue;
               this.damageZombie(j, b.damage[i], dirX, dirZ);
+              if (b.pierce[i] > 0) { b.pierce[i]--; b.lastHit[i] = j; continue; }
               dead = true;
               break;
             }
@@ -337,11 +405,12 @@ export class Game {
     zs.hp[j] -= dmg;
     zs.flash[j] = 0.08;
     zs.hitT[j] = 0;
-    zs.vx[j] += dx * 2.5;
-    zs.vz[j] += dz * 2.5;
+    const knock = KIND_KNOCK[zs.kind[j]];
+    zs.vx[j] += dx * 2.5 * knock;
+    zs.vz[j] += dz * 2.5 * knock;
     this.fx.blood(zs.x[j], 1, zs.z[j], dx, dz, 5);
     if (zs.hp[j] <= 0) {
-      this.kills++;
+      if (++this.kills % KILLS_PER_PLANK === 0) this.player.planks++;
       this.fx.blood(zs.x[j], 0.8, zs.z[j], dx, dz, 16);
       this.fx.decal(zs.x[j] + dx * 0.4, zs.z[j] + dz * 0.4, 1);
       this.shake = Math.max(this.shake, 0.12);
@@ -352,7 +421,7 @@ export class Game {
     const zs = this.zombies;
     for (let i = zs.n - 1; i >= 0; i--) {
       if (zs.hp[i] > 0) continue;
-      this.corpses.add(zs.x[i], zs.z[i], zs.angle[i], zs.tint[i]);
+      this.corpses.add(zs.x[i], zs.z[i], zs.angle[i], zs.tint[i], zs.kind[i]);
       zs.remove(i);
     }
   }

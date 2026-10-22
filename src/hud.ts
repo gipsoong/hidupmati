@@ -1,5 +1,5 @@
-import { PLAYER_MAX_HP } from './config';
 import type { Game } from './game';
+import { WEAPONS } from './weapons';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -14,6 +14,7 @@ export class Hud {
   private readonly bannerTitle = $('banner-title');
   private readonly bannerSub = $('banner-sub');
   private readonly stats = $('stats');
+  private readonly loadout = $('loadout');
   private readonly crosshair = $('crosshair');
   private readonly vignette = $('vignette');
   private readonly cache = new Map<HTMLElement, string>();
@@ -30,13 +31,21 @@ export class Hud {
 
   update(game: Game, dt: number, mouseX: number, mouseY: number, playing: boolean): void {
     const hp = Math.ceil(game.player.hp);
-    if (this.cache.get(this.hpFill) !== String(hp)) {
-      this.cache.set(this.hpFill, String(hp));
-      this.hpFill.style.width = `${(hp / PLAYER_MAX_HP) * 100}%`;
-      this.hpFill.classList.toggle('low', hp <= 30);
-      this.vignette.style.opacity = String(Math.max(0, (40 - hp) / 40) * 0.9);
+    const max = game.player.maxHp;
+    if (this.cache.get(this.hpFill) !== `${hp}/${max}`) {
+      this.cache.set(this.hpFill, `${hp}/${max}`);
+      this.hpFill.style.width = `${(hp / max) * 100}%`;
+      this.hpFill.classList.toggle('low', hp <= max * 0.3);
+      this.vignette.style.opacity = String(Math.max(0, (max * 0.4 - hp) / (max * 0.4)) * 0.9);
     }
     this.set(this.hpText, `${hp}`);
+    const p = game.player;
+    const guns = WEAPONS.map((w, i) => (p.owned[i] ? `<span class="${i === p.weapon ? 'on' : ''}"><kbd>${i + 1}</kbd>${w.name}</span>` : '')).join('');
+    const html = `${guns}<span class="planks"><kbd>E</kbd>Barricade ×${p.planks}</span>`;
+    if (this.cache.get(this.loadout) !== html) {
+      this.cache.set(this.loadout, html);
+      this.loadout.innerHTML = html;
+    }
     this.set(this.wave, game.wave ? `Wave ${game.wave}` : 'Wave -');
     this.set(this.left, `${game.zombiesLeft} left`);
     this.set(this.kills, `${game.kills} kills`);

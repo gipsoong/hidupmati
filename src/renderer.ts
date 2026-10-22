@@ -6,8 +6,10 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import type { Assets } from './assets';
 import {
-  ATTACK_TIME, BULLET_CAP, CORPSE_LIFE, DECAL_CAP, MAP_SIZE as S, PARTICLE_CAP, ZOMBIE_CAP,
+  ATTACK_TIME, BARRICADE_CAP, BULLET_CAP, CORPSE_LIFE, DECAL_CAP, KIND_BRUTE, KIND_SCALE, MAP_SIZE as S, PARTICLE_CAP, ZOMBIE_CAP,
 } from './config';
+
+const PLANKS = 3;
 import type { Game } from './game';
 import { PlayerAvatar } from './render/avatar';
 import { BakedCrowd } from './render/crowd';
@@ -117,6 +119,7 @@ export class Renderer {
   private readonly gtao: GTAOPass;
 
   private readonly bulletMesh: THREE.InstancedMesh;
+  private readonly plankMesh: THREE.InstancedMesh;
   private readonly particleMesh: THREE.InstancedMesh;
   private readonly decalMesh: THREE.InstancedMesh;
   private readonly muzzleLight = new THREE.PointLight(0xffb060, 0, 10, 1.6);
@@ -163,6 +166,9 @@ export class Renderer {
     this.scene.add(outside);
 
     this.bulletMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffe9a0 }), BULLET_CAP);
+    this.plankMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0xffffff }), BARRICADE_CAP * PLANKS);
+    this.plankMesh.castShadow = true;
+    this.plankMesh.receiveShadow = true;
     this.particleMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), PARTICLE_CAP);
     const decalMat = new THREE.MeshLambertMaterial({
       map: splatTexture(), color: 0x6a0707, transparent: true, depthWrite: false,
@@ -175,7 +181,7 @@ export class Renderer {
       new THREE.PlaneGeometry(0.5, 0.5),
       new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    this.scene.add(this.bulletMesh, this.particleMesh, this.decalMesh, this.flash);
+    this.scene.add(this.bulletMesh, this.plankMesh, this.particleMesh, this.decalMesh, this.flash);
 
     this.composer = new EffectComposer(this.gl);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -287,6 +293,7 @@ export class Renderer {
 
     this.drawZombies(game, dt);
     this.drawBullets(game);
+    this.drawBarricades(game);
     this.drawParticles(game);
     this.drawDecals(game);
     if (this.quality === 'high') this.composer.render(dt);
@@ -317,7 +324,8 @@ export class Renderer {
       crowd.setFrame(i, row, zs.animPrevRow[i], zs.animFade[i]);
 
       const x = zs.x[i], z = zs.z[i];
-      writeMatrix(a, i, zs.angle[i] + ZOMBIE_YAW, 1, 1, 1, x, map.groundHeight(x, z), z);
+      const sc = KIND_SCALE[zs.kind[i]];
+      writeMatrix(a, i, zs.angle[i] + ZOMBIE_YAW, sc, sc, sc, x, map.groundHeight(x, z), z);
       if (zs.flash[i] > 0) {
         col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = 3;
       } else {
@@ -326,6 +334,7 @@ export class Renderer {
         col[i * 3] = t * (1 + 0.12 * Math.sin(h));
         col[i * 3 + 1] = t * (1 + 0.08 * Math.sin(h * 1.7));
         col[i * 3 + 2] = t * (1 + 0.12 * Math.sin(h * 2.3));
+        if (zs.kind[i] === KIND_BRUTE) { col[i * 3 + 1] *= 0.7; col[i * 3 + 2] *= 0.65; }
       }
     }
 
@@ -336,11 +345,34 @@ export class Renderer {
       const row = crowd.row('DEAD', Math.min(c.t[j], deadRowsEnd), false);
       crowd.setFrame(n, row, row, 0);
       const sink = Math.max(0, c.t[j] - (CORPSE_LIFE - 3)) / 3;
-      writeMatrix(a, n, c.angle[j] + ZOMBIE_YAW, 1, 1, 1, c.x[j], map.groundHeight(c.x[j], c.z[j]) - sink * 0.6, c.z[j]);
+      const csc = KIND_SCALE[c.kind[j]];
+      writeMatrix(a, n, c.angle[j] + ZOMBIE_YAW, csc, csc, csc, c.x[j], map.groundHeight(c.x[j], c.z[j]) - sink * 0.6, c.z[j]);
       const k = c.tint[j] * 0.85;
       col[n * 3] = k; col[n * 3 + 1] = k; col[n * 3 + 2] = k;
     }
     crowd.commit(n);
+  }
+
+  /** Each barricade is a stack of rough planks that darken as they take damage. */
+  private drawBarricades(game: Game) {
+    const map = game.map, mesh = this.plankMesh;
+    const a = mesh.instanceMatrix.array as Float32Array;
+    const col = mesh.instanceColor!.array as Float32Array;
+    let n = 0;
+    for (const c of map.barricades) {
+      const cx = c % S, cz = (c / S) | 0;
+      const hurt = 1 - map.barricadeHp[c] / map.barricadeMax[c];
+      const h = (cx * 73856093) ^ (cz * 19349663);
+      const yaw = (h & 1) * Math.PI / 2 + ((h >> 3) % 7 - 3) * 0.03;
+      for (let k = 0; k < PLANKS; k++) {
+        const wob = ((h >> (k + 4)) & 3) * 0.02;
+        writeMatrix(a, n, yaw, 1.0 - wob, 0.2, 0.1, cx + 0.5, 0.25 + k * 0.38, cz + 0.5);
+        const t = 1 - hurt * 0.55 - (k === 1 ? 0.08 : 0);
+        col[n * 3] = 0.55 * t; col[n * 3 + 1] = 0.38 * t; col[n * 3 + 2] = 0.22 * t;
+        n++;
+      }
+    }
+    markDirty(mesh, n);
   }
 
   private drawBullets(game: Game) {

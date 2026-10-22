@@ -10,6 +10,7 @@ import {
 } from './config';
 
 const PLANKS = 3;
+const LOOT_CAP = 64;
 import type { Game } from './game';
 import { PlayerAvatar } from './render/avatar';
 import { BakedCrowd } from './render/crowd';
@@ -120,6 +121,7 @@ export class Renderer {
 
   private readonly bulletMesh: THREE.InstancedMesh;
   private readonly plankMesh: THREE.InstancedMesh;
+  private readonly lootMesh: THREE.InstancedMesh;
   private readonly particleMesh: THREE.InstancedMesh;
   private readonly decalMesh: THREE.InstancedMesh;
   private readonly muzzleLight = new THREE.PointLight(0xffb060, 0, 10, 1.6);
@@ -169,6 +171,12 @@ export class Renderer {
     this.plankMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0xffffff }), BARRICADE_CAP * PLANKS);
     this.plankMesh.castShadow = true;
     this.plankMesh.receiveShadow = true;
+    this.lootMesh = instanced(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshLambertMaterial({ color: 0xd9a441, emissive: 0x5a3c0a }),
+      LOOT_CAP,
+    );
+    this.lootMesh.castShadow = true;
     this.particleMesh = instanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), PARTICLE_CAP);
     const decalMat = new THREE.MeshLambertMaterial({
       map: splatTexture(), color: 0x6a0707, transparent: true, depthWrite: false,
@@ -181,7 +189,7 @@ export class Renderer {
       new THREE.PlaneGeometry(0.5, 0.5),
       new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
-    this.scene.add(this.bulletMesh, this.plankMesh, this.particleMesh, this.decalMesh, this.flash);
+    this.scene.add(this.bulletMesh, this.plankMesh, this.lootMesh, this.particleMesh, this.decalMesh, this.flash);
 
     this.composer = new EffectComposer(this.gl);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -294,6 +302,7 @@ export class Renderer {
     this.drawZombies(game, dt);
     this.drawBullets(game);
     this.drawBarricades(game);
+    this.drawLoot(game);
     this.drawParticles(game);
     this.drawDecals(game);
     if (this.quality === 'high') this.composer.render(dt);
@@ -371,6 +380,16 @@ export class Renderer {
         col[n * 3] = 0.55 * t; col[n * 3 + 1] = 0.38 * t; col[n * 3 + 2] = 0.22 * t;
         n++;
       }
+    }
+    markDirty(mesh, n);
+  }
+
+  private drawLoot(game: Game) {
+    const mesh = this.lootMesh, a = mesh.instanceMatrix.array as Float32Array;
+    let n = 0;
+    for (const l of game.map.loot) {
+      if (l.open || n >= LOOT_CAP) continue;
+      writeMatrix(a, n++, game.time * 1.5 + l.x, 0.45, 0.35, 0.45, l.x, 0.3 + Math.sin(game.time * 3 + l.z) * 0.05, l.z);
     }
     markDirty(mesh, n);
   }

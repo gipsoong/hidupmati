@@ -55,6 +55,10 @@ export class Game {
   muzzle = 0;
   /** Upgrades on offer between waves; the game waits until one is picked. */
   choices: Upgrade[] | null = null;
+  /** Scrap picked up from loot this run. */
+  lootScrap = 0;
+  /** Loot payouts are multiplied by this (a meta perk doubles it). */
+  private lootMul = 1;
 
   /** Banner text for the HUD; bannerSeq changes whenever a new one is posted. */
   bannerTitle = '';
@@ -68,10 +72,20 @@ export class Game {
   private waveHp = 0;
   private waveSpeed = 0;
 
-  constructor(seed: number) {
+  /** Scrap this run is worth: kills, cleared waves and loot. */
+  get scrap(): number {
+    return this.kills + Math.max(0, this.wave - 1) * 10 + this.lootScrap;
+  }
+
+  constructor(seed: number, perks: string[] = []) {
     this.map = new GameMap(seed);
     this.flow = new FlowField(this.map);
-    this.player = new Player(S / 2, S / 2);
+    const p = this.player = new Player(S / 2, S / 2);
+    if (perks.includes('timber')) p.planks += 5;
+    if (perks.includes('vigor')) { p.maxHp += 20; p.hp += 20; }
+    if (perks.includes('scavenger')) this.lootMul = 2;
+    if (perks.includes('smg')) { p.owned[1] = true; p.weapon = 1; }
+    if (perks.includes('shotgun')) { p.owned[2] = true; p.weapon = 2; }
     this.announce('Get ready', 'The first wave is coming');
   }
 
@@ -89,6 +103,7 @@ export class Game {
     } else {
       this.updatePlayer(dt, c);
     }
+    this.updateLoot();
     this.flow.update(this.player.x, this.player.z);
     this.updateWaves(dt);
     this.grid.build(this.zombies.x, this.zombies.z, this.zombies.n);
@@ -137,6 +152,20 @@ export class Game {
     if (c.weapon >= 0 && c.weapon < WEAPONS.length && p.owned[c.weapon]) p.weapon = c.weapon;
     if (c.firing && p.fireCd <= 0) this.fire();
     if (c.build) this.placeBarricade();
+  }
+
+  private updateLoot() {
+    const p = this.player;
+    if (p.deadT >= 0) return;
+    for (const l of this.map.loot) {
+      if (l.open || Math.abs(l.x - p.x) > 0.9 || Math.abs(l.z - p.z) > 0.9) continue;
+      l.open = true;
+      const m = this.lootMul, r = Math.random();
+      if (r < 0.35) { p.planks += 4 * m; this.announce('Found planks', `+${4 * m} planks`); }
+      else if (r < 0.65) { p.hp = Math.min(p.maxHp, p.hp + 30 * m); this.announce('Found bandages', `+${30 * m} health`); }
+      else if (r < 0.9) { this.lootScrap += 15 * m; this.announce('Found scrap', `+${15 * m} scrap`); }
+      else { this.choices = offer(p, 3); this.announce('Rare find', 'Pick a free upgrade'); }
+    }
   }
 
   /** Board up the cell in front of the player. */
